@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
+import * as Stream from "effect/Stream";
 import * as crypto from "node:crypto";
 import { Unowned } from "../../AdoptPolicy.ts";
 import { AlchemyContext } from "../../AlchemyContext.ts";
@@ -861,8 +862,21 @@ export const LiveWorkerProvider = () =>
           const cached = zoneCache.get(hostname);
           if (cached) return cached;
 
-          const zoneList = yield* listZones({}).pipe(
-            Effect.map((response) => response.result ?? []),
+          // `@distilled.cloud/cloudflare`'s `ListZonesRequest` is currently
+          // `Schema.Struct({})`, which drops every query param including
+          // `per_page` and `page`. A direct `listZones({})` call therefore
+          // returns only the first page (20 zones), so any account whose
+          // target hostname is not in that first slice fails inference with
+          // a misleading "Could not infer Cloudflare Zone" error. Stream
+          // through every page via the `PaginatedOperationMethod` helper on
+          // the original module export — the `yield* zones.listZones`
+          // binding above is a context-bound `(input) => Effect` produced by
+          // `asEffect()` that does NOT carry the `.pages` / `.items`
+          // properties from the original function.
+          const zoneList = yield* Stream.runCollect(
+            zones.listZones.pages({}),
+          ).pipe(
+            Effect.map((pages) => pages.flatMap((p) => p.result ?? [])),
           );
           for (const zone of zoneList) {
             zoneCache.set(zone.name, zone.id);
